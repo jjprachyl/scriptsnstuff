@@ -1,0 +1,105 @@
+# Parameters
+$workspaceId = "123"
+$modelId = "456"
+$jsonContent = Get-Content -Path "C:\temp\key.txt" | ConvertFrom-Json
+$authToken = $jsonContent.token
+$baseUrl = "https://api.anaplan.com/2/0"
+
+# Mapping of filenames to API fileIds
+$fileToApiIdMap = @{
+    "file1" = "1"
+    "file2" = "2"
+    "file3" = "3"
+    "file4" = "4"
+    "file5" = "5"
+    "file6" = "6"
+}
+
+# Function to set chunk count
+function Set-ChunkCount($fileId, $chunkCount) {
+    Write-Host "Setting chunk count for file $fileId to $chunkCount"
+    $url = "$baseUrl/workspaces/$workspaceId/models/$modelId/files/$fileId"
+    $body = @{chunkCount = $chunkCount} | ConvertTo-Json
+    $headers = @{
+        "Authorization" = "AnaplanAuthToken $authToken"
+        "Content-Type" = "application/json"
+    }
+    $response = Invoke-RestMethod -Uri $url -Method Post -Headers $headers -Body $body
+    Write-Host "Chunk count set successfully"
+    return $response
+}
+
+# Function to upload chunk
+function Upload-Chunk($fileId, $chunkId, $chunkPath) {
+    Write-Host "Uploading chunk $chunkId for file $fileId"
+    $url = "$baseUrl/workspaces/$workspaceId/models/$modelId/files/$fileId/chunks/$chunkId"
+    $headers = @{
+        "Authorization" = "AnaplanAuthToken $authToken"
+        "Content-Type" = "application/octet-stream"
+    }
+    $response = Invoke-RestMethod -Uri $url -Method Put -Headers $headers -InFile $chunkPath
+    Write-Host "Chunk $chunkId uploaded successfully"
+    return $response
+}
+
+# Function to complete upload
+function Complete-Upload($fileId, $fileName, $chunkCount) {
+    Write-Host "Completing upload for file $fileId"
+    $url = "$baseUrl/workspaces/$workspaceId/models/$modelId/files/$fileId/complete"
+    $body = @{
+        id = $fileId
+        name = $fileName
+        chunkCount = $chunkCount
+        firstDataRow = 2
+        headerRow = 1
+    } | ConvertTo-Json
+    $headers = @{
+        "Authorization" = "AnaplanAuthToken $authToken"
+        "Content-Type" = "application/json"
+    }
+    $response = Invoke-RestMethod -Uri $url -Method Post -Headers $headers -Body $body
+    Write-Host "Upload completed for file $fileId"
+    return $response
+}
+
+# Main script
+$rootFolder = "C:\anaplan\results\"
+Write-Host "Starting process in root folder: $rootFolder"
+
+Get-ChildItem $rootFolder -Directory | ForEach-Object {
+    $folderName = $_.Name
+    $fileName = $folderName -replace "_chunks$",""
+    
+    if ($fileToApiIdMap.ContainsKey($fileName)) {
+        $fileId = $fileToApiIdMap[$fileName]
+        Write-Host "`nProcessing folder: $folderName with API fileId: $fileId"
+        $chunkCountFile = Join-Path $_.FullName "${fileName}_chunk_count.txt"
+        if (Test-Path $chunkCountFile) {
+            $chunkCount = Get-Content $chunkCountFile
+            Write-Host "Found $chunkCount chunks for file $fileName"
+            try {
+                # Set chunk count
+                Set-ChunkCount -fileId $fileId -chunkCount $chunkCount
+                # Upload Chunks
+                for ($i = 0; $i -lt $chunkCount; $i++) {
+                    $chunkPath = Join-Path $_.FullName "${fileName}_chunk_$i"
+                    Upload-Chunk -fileId $fileId -chunkId $i -chunkPath $chunkPath
+                }
+                # Complete upload 
+                Complete-Upload -fileId $fileId -fileName $fileName -chunkCount $chunkCount
+                Write-Host "Finished processing folder $folderName with API fileId $fileId"
+            }
+            catch {
+                Write-Host "Error processing folder $folderName with API fileId $fileId: $_"
+            }
+        }
+        else {
+            Write-Host "Chunk count file not found for folder $folderName"
+        }
+    }
+    else {
+        Write-Host "No API fileId mapping found for file $fileName. Skipping."
+    }
+}
+
+Write-Host "`nAll folders processed."
